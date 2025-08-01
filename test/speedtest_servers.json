@@ -1,0 +1,11 @@
+[
+  {
+    "id": 1,
+    "name": "Azure Test Server",
+    "server": "http:\/\/10.0.102.214\/backend",
+    "dlURL": "garbage",
+    "ulURL": "empty",
+    "pingURL": "empty",
+    "getIpURL": "getIP"
+  }
+]

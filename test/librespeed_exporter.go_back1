@@ -1,0 +1,190 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+
+	"github.com/golang/snappy"
+	"github.com/prometheus/prometheus/prompb"
+)
+
+type ServerInfo struct {
+	URL string `json:"url"`
+}
+
+type LibrespeedResult struct {
+	Download float64    `json:"download"`
+	Upload   float64    `json:"upload"`
+	Ping     float64    `json:"ping"`
+	Jitter   float64    `json:"jitter"`
+	Server   ServerInfo `json:"server"`
+}
+
+func runLibrespeed() (*LibrespeedResult, error) {
+	log.Println("Running librespeed-cli...")
+	cmd := exec.Command("librespeed-cli", "--telemetry-level", "basic", "--json")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to run librespeed-cli: %v", err)
+	}
+
+	var results []LibrespeedResult
+	if err := json.Unmarshal(output, &results); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON: %v", err)
+	}
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no results returned from librespeed-cli")
+	}
+	return &results[0], nil
+}
+
+func createTimeSeries(metric string, value float64, ts int64, serverURL, instance string) *prompb.TimeSeries {
+	return &prompb.TimeSeries{
+		Labels: []prompb.Label{
+			{Name: "__name__", Value: metric},
+			{Name: "server_url", Value: serverURL},
+			{Name: "instance", Value: instance},
+		},
+		Samples: []prompb.Sample{
+			{Value: value, Timestamp: ts},
+		},
+	}
+}
+
+func getLabelValue(labels []prompb.Label, name string) string {
+	for _, label := range labels {
+		if label.Name == name {
+			return label.Value
+		}
+	}
+	return ""
+}
+
+func sendToRemoteWrite(url, username, password string, series []*prompb.TimeSeries) error {
+	for _, ts := range series {
+		log.Printf("Sending metric: %s | Server: %s | Instance: %s | Value: %.2f | Timestamp: %d",
+			getLabelValue(ts.Labels, "__name__"),
+			getLabelValue(ts.Labels, "server_url"),
+			getLabelValue(ts.Labels, "instance"),
+			ts.Samples[0].Value,
+			ts.Samples[0].Timestamp,
+		)
+	}
+
+	var tsList []prompb.TimeSeries
+	for _, ts := range series {
+		tsList = append(tsList, *ts)
+	}
+
+	req := &prompb.WriteRequest{
+		Timeseries: tsList,
+	}
+
+	data, err := req.Marshal()
+	if err != nil {
+		return fmt.Errorf("failed to marshal protobuf: %v", err)
+	}
+
+	compressed := snappy.Encode(nil, data)
+
+	reqBody := bytes.NewReader(compressed)
+	httpReq, err := http.NewRequest("POST", url, reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP request: %v", err)
+	}
+
+	httpReq.Header.Set("Content-Encoding", "snappy")
+	httpReq.Header.Set("Content-Type", "application/x-protobuf")
+	httpReq.Header.Set("X-Prometheus-Remote-Write-Version", "0.1.0")
+	httpReq.SetBasicAuth(username, password)
+
+	client := &http.Client{}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("failed to send HTTP request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	log.Printf("Received response: %s", resp.Status)
+
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("remote_write failed: %s - %s", resp.Status, string(body))
+	}
+
+	return nil
+}
+
+func validateLogFilePath(path string) error {
+	dir := filepath.Dir(path)
+	if stat, err := os.Stat(dir); os.IsNotExist(err) || !stat.IsDir() {
+		return fmt.Errorf("log file directory does not exist: %s", dir)
+	}
+	return nil
+}
+
+func main() {
+	logFilePath := flag.String("logfile", "librespeed_exporter.log", "Path to the log file")
+	url := flag.String("url", "", "Grafana Cloud remote_write URL")
+	username := flag.String("username", "", "Grafana Cloud instance ID")
+	password := flag.String("password", "", "Grafana Cloud API key")
+	flag.Parse()
+
+	if err := validateLogFilePath(*logFilePath); err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid log file path: %v\n", err)
+		os.Exit(1)
+	}
+
+	logFile, err := os.OpenFile(*logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open log file: %v\n", err)
+		os.Exit(1)
+	}
+	defer logFile.Close()
+
+	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
+	log.SetFlags(log.LstdFlags) // Adds timestamp to each log line
+
+	log.Println("Starting librespeed exporter...")
+
+	if *url == "" || *username == "" || *password == "" {
+		log.Println("All flags --url, --username, and --password are required.")
+		os.Exit(1)
+	}
+
+	result, err := runLibrespeed()
+	if err != nil {
+		log.Printf("Error running librespeed: %v", err)
+		os.Exit(1)
+	}
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		log.Printf("Error getting hostname: %v", err)
+		os.Exit(1)
+	}
+
+	now := time.Now().UnixMilli()
+	series := []*prompb.TimeSeries{
+		createTimeSeries("librespeed_download_mbps", result.Download, now, result.Server.URL, hostname),
+		createTimeSeries("librespeed_upload_mbps", result.Upload, now, result.Server.URL, hostname),
+		createTimeSeries("librespeed_ping_ms", result.Ping, now, result.Server.URL, hostname),
+		createTimeSeries("librespeed_jitter_ms", result.Jitter, now, result.Server.URL, hostname),
+	}
+
+	if err := sendToRemoteWrite(*url, *username, *password, series); err != nil {
+		log.Printf("Error sending metrics: %v", err)
+		os.Exit(1)
+	}
+
+	log.Println("Metrics sent successfully.")
+}
