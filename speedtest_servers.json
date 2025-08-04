@@ -1,8 +1,26 @@
 [
   {
     "id": 1,
-    "name": "Azure Test Server",
+    "name": "HQ Librespeed HAProxy",
     "server": "http:\/\/10.0.102.214\/backend",
+    "dlURL": "garbage",
+    "ulURL": "empty",
+    "pingURL": "empty",
+    "getIpURL": "getIP"
+  },
+  {
+    "id": 2,
+    "name": "HQ Librespeed backend 1",
+    "server": "http:\/\/10.0.102.216\/backend",
+    "dlURL": "garbage",
+    "ulURL": "empty",
+    "pingURL": "empty",
+    "getIpURL": "getIP"
+  },
+  {
+    "id": 3,
+    "name": "HQ Librespeed backend 2",
+    "server": "http:\/\/10.0.102.217:8989\/backend",
     "dlURL": "garbage",
     "ulURL": "empty",
     "pingURL": "empty",

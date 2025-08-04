@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -89,10 +90,10 @@ func TestSendToRemoteWrite_InvalidURL(t *testing.T) {
 }
 
 func TestRunLibrespeed_Success(t *testing.T) {
-	mockOutput := `[{"download":100.5,"upload":50.2,"ping":10.1,"jitter":1.2,"server":{"url":"http://test"}}]`
+	mockOutput := "[{\"download\":100.5,\"upload\":50.2,\"ping\":10.1,\"jitter\":1.2,\"server\":{\"url\":\"http://example.com\"}}]"
 	runner := &MockRunner{Output: []byte(mockOutput)}
-
-	result, err := runLibrespeed(runner, "")
+	var serverID *int = nil // No local JSON path needed for this test
+	result, err := runLibrespeed(runner, "librespeed-cli.exe", "", serverID)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -102,15 +103,30 @@ func TestRunLibrespeed_Success(t *testing.T) {
 }
 
 func TestRunLibrespeed_WithLocalJSON(t *testing.T) {
-	mockOutput := `[{"download":200.0,"upload":100.0,"ping":5.0,"jitter":0.5,"server":{"url":"http://custom"}}]`
+	mockOutput := "[{\"download\":200.0,\"upload\":100.0,\"ping\":5.0,\"jitter\":0.5,\"server\":{\"url\":\"http://10.0.102.214/backend\"}}]"
 	runner := &MockRunner{Output: []byte(mockOutput)}
 
-	result, err := runLibrespeed(runner, "/path/to/servers.json")
+	// Create a temporary JSON file with mock server data
+	content := `[{"id":"1","name":"HQ Servers","server":"http://10.0.102.214/backend","dlURL":"garbage","ulURL":"empty","pingURL":"empty","getIpURL":"getIP"}]`
+	tmpFile, err := os.CreateTemp("", "servers_*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name()) // Clean up after test
+
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	// Run the test using the temp JSON file
+	var serverID int = 1 // Use server ID 1 to match the mock data
+	result, err := runLibrespeed(runner, "librespeed-cli.exe", tmpFile.Name(), &serverID)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
-	if result.Server.URL != "http://custom" {
-		t.Errorf("Expected server URL 'http://custom', got '%s'", result.Server.URL)
+	if result.Server.URL != "http://10.0.102.214/backend" {
+		t.Errorf("Expected server URL 'http://10.0.102.214/backend', got '%s'", result.Server.URL)
 	}
 	if !strings.Contains(runner.LastArgs(), "--local-json") {
 		t.Error("Expected '--local-json' argument to be passed")
@@ -119,7 +135,7 @@ func TestRunLibrespeed_WithLocalJSON(t *testing.T) {
 
 func TestRunLibrespeed_InvalidJSON(t *testing.T) {
 	runner := &MockRunner{Output: []byte("invalid json")}
-	_, err := runLibrespeed(runner, "")
+	_, err := runLibrespeed(runner, "librespeed-cli.exe", "", nil)
 	if err == nil {
 		t.Error("Expected JSON parse error, got nil")
 	}
@@ -127,13 +143,12 @@ func TestRunLibrespeed_InvalidJSON(t *testing.T) {
 
 func TestRunLibrespeed_CommandError(t *testing.T) {
 	runner := &MockRunner{Err: fmt.Errorf("command failed")}
-	_, err := runLibrespeed(runner, "")
+	_, err := runLibrespeed(runner, "librespeed-cli.exe", "", nil)
 	if err == nil {
 		t.Error("Expected command error, got nil")
 	}
 }
 
-// MockRunner implements CommandRunner for testing
 type MockRunner struct {
 	Output   []byte
 	Err      error
