@@ -1,0 +1,9 @@
+coverage:
+  files:
+    - coverage.out
+comment:
+  enabled: true
+summary:
+  enabled: true
+report:
+  enabled: true
