@@ -29,6 +29,10 @@ jobs:
         with:
           name: coverage
           path: coverage.out
+      - name: Post coverage summary to PR
+        uses: k1LoW/octocov@v1
+        with:
+          coverage: coverage.out
 
   release:
     runs-on: windows-latest
