@@ -24,11 +24,6 @@ jobs:
       - name: Run tests with coverage
         run: |
           go test -v -coverprofile=coverage.out ./...
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          files: coverage.out
-          fail_ci_if_error: true
       - name: Post coverage summary to PR
         uses: k1LoW/octocov-action@v1
         with:
