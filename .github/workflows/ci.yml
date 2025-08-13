@@ -47,13 +47,3 @@ jobs:
         with:
           name: librespeed-exe
           path: librespeed.exe
-
-coverage:
-  files:
-    - coverage.out
-comment:
-  enabled: true
-summary:
-  enabled: true
-report:
-  enabled: true
