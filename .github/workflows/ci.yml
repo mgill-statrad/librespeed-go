@@ -24,13 +24,13 @@ jobs:
       - name: Run tests with coverage
         run: |
           go test -v -coverprofile=coverage.out ./...
-      - name: Upload coverage to PR
-        uses: actions/upload-artifact@v4
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
         with:
-          name: coverage
-          path: coverage.out
+          files: coverage.out
+          fail_ci_if_error: true
       - name: Post coverage summary to PR
-        uses: k1LoW/octocov@v1.7.0
+        uses: k1LoW/octocov-action@v1
         with:
           coverage: coverage.out
 
