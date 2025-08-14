@@ -47,3 +47,48 @@ jobs:
         with:
           name: librespeed-exe
           path: librespeed.exe
+      - name: Create release archive
+        run: |
+          Compress-Archive -Path librespeed.exe,speedtest_servers.json -DestinationPath librespeed-release.zip
+      - name: Get latest tag
+        id: get_tag
+        shell: pwsh
+        run: |
+          git fetch --tags
+          $tags = git tag --sort=-v:refname | Select-String -Pattern '^v[0-9]+\.[0-9]+\.[0-9]+$'
+          if (-not $tags) {
+            echo "::set-output name=tag::v1.0.0"
+          } else {
+            $latest_tag = $tags[0].ToString().Trim()
+            $version = $latest_tag.TrimStart('v').Split('.')
+            $major = $version[0]
+            $minor = $version[1]
+            $patch = [int]$version[2] + 1
+            echo "::set-output name=tag::v$major.$minor.$patch"
+          }
+      - name: Create and push tag
+        shell: pwsh
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git tag ${{ steps.get_tag.outputs.tag }}
+          git push origin ${{ steps.get_tag.outputs.tag }}
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.get_tag.outputs.tag }}
+          release_name: Release ${{ steps.get_tag.outputs.tag }}
+          draft: false
+          prerelease: false
+      - name: Upload release archive
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: librespeed-release.zip
+          asset_name: librespeed-release.zip
+          asset_content_type: application/zip
