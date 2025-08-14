@@ -50,18 +50,22 @@ jobs:
           Compress-Archive -Path librespeed.exe,speedtest_servers.json -DestinationPath librespeed-release.zip
       - name: Get latest tag
         id: get_tag
+        shell: pwsh
         run: |
           git fetch --tags
-          latest_tag=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
-          if [ -z "$latest_tag" ]; then
+          $tags = git tag --sort=-v:refname | Select-String -Pattern '^v[0-9]+\.[0-9]+\.[0-9]+$'
+          if (-not $tags) {
             echo "::set-output name=tag::v1.0.0"
-          else
-            IFS='.' read -r major minor patch <<< "${latest_tag#v}"
-            patch=$((patch+1))
+          } else {
+            $latest_tag = $tags[0].ToString().Trim()
+            $version = $latest_tag.TrimStart('v').Split('.')
+            $major = $version[0]
+            $minor = $version[1]
+            $patch = [int]$version[2] + 1
             echo "::set-output name=tag::v$major.$minor.$patch"
-          fi
-        shell: bash
+          }
       - name: Create and push tag
+        shell: pwsh
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
