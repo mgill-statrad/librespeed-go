@@ -1,5 +1,4 @@
-name: CI
-
+name: speedtest-go
 on:
   pull_request:
     branches:
@@ -8,7 +7,6 @@ on:
   push:
     branches:
       - main
-
 jobs:
   build:
     runs-on: ubuntu-latest
