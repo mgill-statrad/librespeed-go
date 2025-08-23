@@ -1,2 +1,8 @@
 go.mod
-go.sum
+go.sum# Build artifacts
+librespeed.exe
+coverage.out
+C:\librespeed-cli/
+coverage.html
+C:\librespeed-cli/
+C:\\librespeed-cli\\*
