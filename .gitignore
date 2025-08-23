@@ -1,2 +1,4 @@
 go.mod
-go.sum
+go.sum# Build artifacts
+librespeed.exe
+coverage.out
