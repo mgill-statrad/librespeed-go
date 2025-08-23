@@ -839,3 +839,118 @@ func TestIntegration_CompleteWorkflow(t *testing.T) {
 	// 4. Send to remote write endpoint
 	// All with proper validation of data flow between components
 }
+
+// Test the new configuration validation function
+func TestValidateConfiguration(t *testing.T) {
+	testCases := []struct {
+		name, url, username, password string
+		shouldError                   bool
+		expectedError                 string
+	}{
+		{"Valid config", "https://example.com/api/prom/push", "user", "pass", false, ""},
+		{"Missing URL", "", "user", "pass", true, "remote write URL is required"},
+		{"Missing username", "https://example.com/api/prom/push", "", "pass", true, "username is required"},
+		{"Missing password", "https://example.com/api/prom/push", "user", "", true, "password is required"},
+		{"Invalid URL", "ht\ttp://example.com", "user", "pass", true, "invalid remote write URL format"},
+		{"Bad scheme", "ftp://example.com", "user", "pass", true, "must use http or https scheme"},
+		{"No host", "https://", "user", "pass", true, "must include a host"},
+		{"HTTP URL", "http://example.com/api/prom/push", "user", "pass", false, ""},
+	}
+	
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateConfiguration(tc.url, tc.username, tc.password)
+			hasError := err != nil
+			
+			if hasError != tc.shouldError {
+				t.Errorf("Expected error=%v, got error=%v (err: %v)", tc.shouldError, hasError, err)
+			}
+			
+			if hasError && tc.expectedError != "" && !strings.Contains(err.Error(), tc.expectedError) {
+				t.Errorf("Expected error to contain '%s', got '%v'", tc.expectedError, err)
+			}
+		})
+	}
+}
+
+// Test the retry logic
+func TestSendToRemoteWriteWithRetry(t *testing.T) {
+	// Speed up tests by using shorter delay
+	originalDelayFunc := retryDelayFunc
+	retryDelayFunc = func(attempt int) time.Duration {
+		return 10 * time.Millisecond // Very short delay for tests
+	}
+	defer func() { retryDelayFunc = originalDelayFunc }()
+	
+	// Test successful retry after initial failure
+	attempt := 0
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		if attempt == 1 {
+			// Fail first attempt
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("temporary error"))
+		} else {
+			// Succeed on retry
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer mockServer.Close()
+
+	ts := createTimeSeries("test_metric", 1.0, time.Now().UnixMilli(), "server", "instance")
+	err := sendToRemoteWriteWithRetry(mockServer.URL, "user", "pass", []*prompb.TimeSeries{ts}, 1)
+	if err != nil {
+		t.Errorf("Expected retry to succeed, got error: %v", err)
+	}
+	if attempt != 2 {
+		t.Errorf("Expected 2 attempts (1 failure + 1 success), got %d", attempt)
+	}
+}
+
+func TestSendToRemoteWriteWithRetry_NonRetryableError(t *testing.T) {
+	// Test that 403 error doesn't retry
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte("Forbidden"))
+	}))
+	defer mockServer.Close()
+
+	ts := createTimeSeries("test_metric", 1.0, time.Now().UnixMilli(), "server", "instance")
+	err := sendToRemoteWriteWithRetry(mockServer.URL, "user", "pass", []*prompb.TimeSeries{ts}, 1)
+	if err == nil {
+		t.Error("Expected error for forbidden response")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("Expected error to mention 403, got: %v", err)
+	}
+}
+
+func TestSendToRemoteWriteWithRetry_MaxRetriesExceeded(t *testing.T) {
+	// Speed up tests by using shorter delay
+	originalDelayFunc := retryDelayFunc
+	retryDelayFunc = func(attempt int) time.Duration {
+		return 10 * time.Millisecond // Very short delay for tests
+	}
+	defer func() { retryDelayFunc = originalDelayFunc }()
+	
+	// Test that max retries are respected
+	attempt := 0
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("persistent error"))
+	}))
+	defer mockServer.Close()
+
+	ts := createTimeSeries("test_metric", 1.0, time.Now().UnixMilli(), "server", "instance")
+	err := sendToRemoteWriteWithRetry(mockServer.URL, "user", "pass", []*prompb.TimeSeries{ts}, 1)
+	if err == nil {
+		t.Error("Expected error after max retries exceeded")
+	}
+	if attempt != 2 { // 1 initial + 1 retry
+		t.Errorf("Expected 2 attempts (1 + 1 retry), got %d", attempt)
+	}
+	if !strings.Contains(err.Error(), "failed after 2 attempts") {
+		t.Errorf("Expected error message about 2 attempts, got: %v", err)
+	}
+}

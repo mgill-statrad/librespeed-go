@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -289,6 +291,47 @@ func sendToRemoteWrite(url, username, password string, series []*prompb.TimeSeri
 	return nil
 }
 
+// For testing, we can use a shorter delay
+var retryDelayFunc = func(attempt int) time.Duration {
+	backoffSeconds := (1 << (attempt - 1)) + rand.Intn(1<<(attempt-1))
+	if backoffSeconds > 30 {
+		backoffSeconds = 30
+	}
+	return time.Duration(backoffSeconds) * time.Second
+}
+
+func sendToRemoteWriteWithRetry(url, username, password string, series []*prompb.TimeSeries, maxRetries int) error {
+	var lastErr error
+	
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := retryDelayFunc(attempt)
+			log.Printf("Retrying in %v (attempt %d/%d)", delay, attempt+1, maxRetries+1)
+			time.Sleep(delay)
+		}
+		
+		err := sendToRemoteWrite(url, username, password, series)
+		if err == nil {
+			if attempt > 0 {
+				log.Printf("Successfully sent metrics after %d retries", attempt)
+			}
+			return nil
+		}
+		
+		lastErr = err
+		log.Printf("Attempt %d failed: %v", attempt+1, err)
+		
+		// Don't retry on certain types of errors (authentication, bad request, etc.)
+		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "403") || 
+		   strings.Contains(err.Error(), "400") || strings.Contains(err.Error(), "404") {
+			log.Printf("Non-retryable error detected, stopping retries: %v", err)
+			break
+		}
+	}
+	
+	return fmt.Errorf("failed after %d attempts, last error: %v", maxRetries+1, lastErr)
+}
+
 func validateLogFilePath(path string) error {
 	if path == "" {
 		return fmt.Errorf("log file path cannot be empty")
@@ -298,6 +341,35 @@ func validateLogFilePath(path string) error {
 	if stat, err := os.Stat(dir); os.IsNotExist(err) || !stat.IsDir() {
 		return fmt.Errorf("log file directory does not exist: %s", dir)
 	}
+	return nil
+}
+
+func validateConfiguration(remoteWriteURL, username, password string) error {
+	if remoteWriteURL == "" {
+		return fmt.Errorf("remote write URL is required")
+	}
+	if username == "" {
+		return fmt.Errorf("username is required")
+	}
+	if password == "" {
+		return fmt.Errorf("password is required")
+	}
+	
+	// Validate URL format
+	parsedURL, err := url.Parse(remoteWriteURL)
+	if err != nil {
+		return fmt.Errorf("invalid remote write URL format: %v", err)
+	}
+	
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("remote write URL must use http or https scheme")
+	}
+	
+	if parsedURL.Host == "" {
+		return fmt.Errorf("remote write URL must include a host")
+	}
+	
+	log.Printf("Configuration validated - URL: %s, Username: %s", remoteWriteURL, username)
 	return nil
 }
 
@@ -335,16 +407,12 @@ func main() {
 	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	// Validate required parameters
-	if *url == "" || *username == "" || *password == "" {
-		log.Println("ERROR: All flags --url, --username, and --password are required.")
-		fmt.Fprintf(os.Stderr, "ERROR: Missing required parameters. Use --help for usage information.\n")
+	// Validate required parameters and configuration
+	if err := validateConfiguration(*url, *username, *password); err != nil {
+		log.Printf("ERROR: Configuration validation failed: %v", err)
+		fmt.Fprintf(os.Stderr, "ERROR: Configuration validation failed: %v\n", err)
 		os.Exit(1)
 	}
-
-	// Log configuration (without sensitive data)
-	log.Printf("Configuration - URL: %s, Username: %s, Local JSON: %s, Server ID: %d", 
-		*url, *username, *localJSONPath, *serverID)
 
 	start := time.Now()
 	
@@ -376,8 +444,8 @@ func main() {
 		createTimeSeries("librespeed_jitter_ms", result.Jitter, now, result.Server.URL, hostname),
 	}
 
-	if err := sendToRemoteWrite(*url, *username, *password, series); err != nil {
-		log.Printf("ERROR: Failed to send metrics: %v", err)
+	if err := sendToRemoteWriteWithRetry(*url, *username, *password, series, 3); err != nil {
+		log.Printf("ERROR: Failed to send metrics after retries: %v", err)
 		os.Exit(1)
 	}
 
