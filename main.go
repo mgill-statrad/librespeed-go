@@ -290,6 +290,10 @@ func sendToRemoteWrite(url, username, password string, series []*prompb.TimeSeri
 }
 
 func validateLogFilePath(path string) error {
+	if path == "" {
+		return fmt.Errorf("log file path cannot be empty")
+	}
+	
 	dir := filepath.Dir(path)
 	if stat, err := os.Stat(dir); os.IsNotExist(err) || !stat.IsDir() {
 		return fmt.Errorf("log file directory does not exist: %s", dir)
