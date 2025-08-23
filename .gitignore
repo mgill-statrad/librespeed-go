@@ -2,3 +2,5 @@ go.mod
 go.sum# Build artifacts
 librespeed.exe
 coverage.out
+C:\librespeed-cli/
+coverage.html
