@@ -24,8 +24,6 @@ jobs:
           go test -v -coverprofile=coverage.out ./...
       - name: Post coverage summary to PR
         uses: k1LoW/octocov-action@v1
-        with:
-          coverage: coverage.out
 
   release:
     runs-on: windows-latest
