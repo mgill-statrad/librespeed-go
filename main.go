@@ -14,8 +14,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/golang/snappy"
@@ -374,6 +376,19 @@ func validateConfiguration(remoteWriteURL, username, password string) error {
 }
 
 func main() {
+	// Set up graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	
+	// Handle shutdown signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigChan
+		log.Printf("Received signal %v, initiating graceful shutdown...", sig)
+		cancel()
+	}()
+
 	logFilePath := flag.String("logfile", "librespeed_exporter.log", "Path to the log file")
 	url := flag.String("url", "", "Grafana Cloud remote_write URL")
 	username := flag.String("username", "", "Grafana Cloud instance ID")
@@ -416,10 +431,26 @@ func main() {
 
 	start := time.Now()
 	
+	// Check for cancellation before expensive operations
+	select {
+	case <-ctx.Done():
+		log.Println("Shutdown requested before librespeed-cli download")
+		return
+	default:
+	}
+	
 	cliPath, err := ensureLibrespeedCLI()
 	if err != nil {
 		log.Printf("ERROR: Failed to ensure librespeed-cli: %v", err)
 		os.Exit(1)
+	}
+
+	// Check for cancellation before speed test
+	select {
+	case <-ctx.Done():
+		log.Println("Shutdown requested before running speed test")
+		return
+	default:
 	}
 
 	result, err := runLibrespeed(&DefaultRunner{}, cliPath, *localJSONPath, serverID)
@@ -442,6 +473,14 @@ func main() {
 		createTimeSeries("librespeed_upload_mbps", result.Upload, now, result.Server.URL, hostname),
 		createTimeSeries("librespeed_ping_ms", result.Ping, now, result.Server.URL, hostname),
 		createTimeSeries("librespeed_jitter_ms", result.Jitter, now, result.Server.URL, hostname),
+	}
+
+	// Check for cancellation before sending metrics
+	select {
+	case <-ctx.Done():
+		log.Println("Shutdown requested before sending metrics")
+		return
+	default:
 	}
 
 	if err := sendToRemoteWriteWithRetry(*url, *username, *password, series, 3); err != nil {
